@@ -39,7 +39,8 @@ export const getOpenAIKey = (): string => {
     if (typeof window !== "undefined") {
         key = localStorage.getItem(openAItoken)
     }
-    return key ?? process.env.NEXT_PUBLIC_OPENAI_API_KEY ?? ""
+    const keyFromEnv = (window as any).Cypress ? "" : process.env.NEXT_PUBLIC_OPENAI_API_KEY
+    return key ?? keyFromEnv ?? ""
 }
 
 export const removeOpenAIKey = () => {
@@ -82,6 +83,8 @@ export const convertToCsv = (rows: RowType[], header: (string | undefined)[]): s
 }
 
 export const downloadCsv = (csvContent: string, filename: string): void => {
+    if (typeof window === "undefined") return
+
     const blob = new Blob([csvContent], {type: "text/csv"})
     const link = document.createElement("a")
     link.href = URL.createObjectURL(blob)
@@ -133,7 +136,7 @@ export const getInitials = (str: string, limit = 2) => {
 
 export const isDemo = () => {
     if (process.env.NEXT_PUBLIC_FF) {
-        return ["demo", "cloud", "ee"].includes(process.env.NEXT_PUBLIC_FF)
+        return ["cloud", "ee"].includes(process.env.NEXT_PUBLIC_FF)
     }
     return false
 }

@@ -44,8 +44,8 @@ from agenta_backend.services import db_manager
 from agenta_backend.models import converters
 from agenta_backend.services import results_service
 
-if os.environ["FEATURE_FLAG"] in ["cloud", "ee", "demo"]:
-    from agenta_backend.ee.services.selectors import (  # noqa pylint: disable-all
+if os.environ["FEATURE_FLAG"] in ["cloud", "ee"]:
+    from agenta_backend.cloud.services.selectors import (  # noqa pylint: disable-all
         get_user_and_org_id,
     )
 else:

@@ -8,8 +8,6 @@ from fastapi import APIRouter, HTTPException, Request
 from agenta_backend.services.selectors import get_user_own_org
 from agenta_backend.services import (
     app_manager,
-    docker_utils,
-    container_manager,
     db_manager,
 )
 from agenta_backend.utils.common import (
@@ -24,15 +22,27 @@ from agenta_backend.models.api.api_models import (
     AppVariantOutput,
     AddVariantFromImagePayload,
     EnvironmentOutput,
+    Image,
 )
 from agenta_backend.models import converters
 
-if os.environ["FEATURE_FLAG"] in ["cloud", "ee", "demo"]:
-    from agenta_backend.ee.services.selectors import (
+if os.environ["FEATURE_FLAG"] in ["cloud", "ee"]:
+    from agenta_backend.cloud.services.selectors import (
         get_user_and_org_id,
     )  # noqa pylint: disable-all
 else:
     from agenta_backend.services.selectors import get_user_and_org_id
+
+if os.environ["FEATURE_FLAG"] in ["cloud"]:
+    from agenta_backend.cloud.services import (
+        lambda_deployment_manager as deployment_manager,
+    )  # noqa pylint: disable-all
+elif os.environ["FEATURE_FLAG"] in ["ee"]:
+    from agenta_backend.ee.services import (
+        deployment_manager,
+    )  # noqa pylint: disable-all
+else:
+    from agenta_backend.services import deployment_manager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -221,12 +231,17 @@ async def add_variant_from_image(
     """
 
     if os.environ["FEATURE_FLAG"] not in ["cloud", "ee"]:
+        image = Image(
+            type="image",
+            docker_id=payload.docker_id,
+            tags=payload.tags,
+        )
         if not payload.tags.startswith(settings.registry):
             raise HTTPException(
                 status_code=500,
                 detail="Image should have a tag starting with the registry name (agenta-server)",
             )
-        elif docker_utils.find_image_by_docker_id(payload.docker_id) is None:
+        elif await deployment_manager.validate_image(image) is False:
             raise HTTPException(status_code=404, detail="Image not found")
 
     try:
@@ -244,7 +259,7 @@ async def add_variant_from_image(
         app_variant_db = await app_manager.add_variant_based_on_image(
             app=app,
             variant_name=payload.variant_name,
-            docker_id=payload.docker_id,
+            docker_id_or_template_uri=payload.docker_id,
             tags=payload.tags,
             base_name=payload.base_name,
             config_name=payload.config_name,
@@ -311,23 +326,14 @@ async def create_app_and_variant_from_template(
         logger.debug("Step 1: Getting user and organization ID")
         user_org_data: dict = await get_user_and_org_id(request.state.user_id)
 
-        # Check if the user has reached app limit
-        logger.debug("Step 2: Checking user app limit")
-        if os.environ["FEATURE_FLAG"] == "demo":
-            if await db_manager.count_apps(**user_org_data) > 2:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Sorry, you can only create two Apps at this time.",
-                )
-
-        logger.debug("Step 3: Setting organization ID")
+        logger.debug("Step 2: Setting organization ID")
         if payload.organization_id is None:
             organization = await get_user_own_org(user_org_data["uid"])
             organization_id = organization.id
         else:
             organization_id = payload.organization_id
 
-        logger.debug(f"Step 4: Checking if app {payload.app_name} already exists")
+        logger.debug(f"Step 3 Checking if app {payload.app_name} already exists")
         app_name = payload.app_name.lower()
         app = await db_manager.fetch_app_by_name_and_organization(
             app_name, organization_id, **user_org_data
@@ -338,25 +344,29 @@ async def create_app_and_variant_from_template(
                 detail=f"App with name {app_name} already exists",
             )
 
-        logger.debug("Step 5: Creating new app and initializing environments")
+        logger.debug("Step 4: Creating new app and initializing environments")
         if app is None:
             app = await db_manager.create_app_and_envs(
                 app_name, organization_id, **user_org_data
             )
 
-        logger.debug("Step 5 (extra): Retrieve template from db")
+        logger.debug("Step 5: Retrieve template from db")
         template_db = await db_manager.get_template(payload.template_id)
+        repo_name = os.environ.get("AGENTA_TEMPLATE_REPO", "agentaai/lambda_templates")
+        image_name = f"{repo_name}:{template_db.name}"
 
         logger.debug(
             "Step 6: Creating image instance and adding variant based on image"
         )
-        repo_name = os.environ.get("AGENTA_TEMPLATE_REPO", "agentaai/lambda_templates")
-        image_name = f"{repo_name}:{template_db.name}"
         app_variant_db = await app_manager.add_variant_based_on_image(
             app=app,
             variant_name="app.default",
-            docker_id=template_db.digest,
-            tags=f"{image_name}",
+            docker_id_or_template_uri=template_db.template_uri
+            if os.environ["FEATURE_FLAG"] in ["cloud"]
+            else template_db.digest,
+            tags=f"{image_name}"
+            if os.environ["FEATURE_FLAG"] not in ["cloud"]
+            else None,
             base_name="app",
             config_name="default",
             is_template_image=True,
@@ -373,7 +383,7 @@ async def create_app_and_variant_from_template(
         )
 
         logger.debug("Step 8: Starting variant and injecting environment variables")
-        if os.environ["FEATURE_FLAG"] in ["cloud", "ee", "demo"]:
+        if os.environ["FEATURE_FLAG"] in ["cloud", "ee"]:
             if not os.environ["OPENAI_API_KEY"]:
                 raise HTTPException(
                     status_code=400,

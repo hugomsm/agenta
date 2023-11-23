@@ -6,8 +6,8 @@ from fastapi.responses import JSONResponse
 from agenta_backend.services import db_manager
 from agenta_backend.models import converters
 
-if os.environ["FEATURE_FLAG"] in ["cloud", "ee", "demo"]:
-    from agenta_backend.ee.services.selectors import (
+if os.environ["FEATURE_FLAG"] in ["cloud", "ee"]:
+    from agenta_backend.cloud.services.selectors import (
         get_user_and_org_id,
     )  # noqa pylint: disable-all
 else:
